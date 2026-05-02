@@ -3,6 +3,7 @@ import { Bell } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { listSubscriptionsForUser } from '@/services/subscriptions'
 import { useAuthStore } from '@/stores/authStore'
+import { formatMoney } from '@/utils/currency'
 import { isDueWithinDays } from '@/utils/dates'
 import type { Subscription } from '@/types'
 
@@ -41,7 +42,7 @@ export function BillNotifications() {
         <span className="text-[var(--color-muted)]">—</span>
         {upcoming.map((s) => (
           <span key={s.id} className="rounded-md bg-amber-500/20 px-2 py-0.5">
-            {s.name} · ${s.amount.toFixed(2)} ·{' '}
+            {s.name} · {formatMoney(s.amount)} ·{' '}
             {format(parseISO(s.nextBillingDate), 'MMM d')}
           </span>
         ))}

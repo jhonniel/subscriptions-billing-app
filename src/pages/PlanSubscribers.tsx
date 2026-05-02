@@ -7,6 +7,7 @@ import { getPlan } from '@/services/plans'
 import { countActiveSubscriptionsForPlan, listSubscriptionsByPlanId } from '@/services/subscriptions'
 import { fetchAllUsers } from '@/services/users'
 import type { Subscription, SubscriptionPlan, UserProfile } from '@/types'
+import { formatMoney } from '@/utils/currency'
 
 export function PlanSubscribersPage() {
   const { planId } = useParams<{ planId: string }>()
@@ -78,7 +79,7 @@ export function PlanSubscribersPage() {
               {activeCount} / {plan.slotsTotal}
             </strong>
             <span className="text-[var(--color-muted)]"> · Default </span>
-            ${plan.defaultAmount.toFixed(2)} / {plan.billingCycle}
+            {formatMoney(plan.defaultAmount)} / {plan.billingCycle}
           </p>
         </Card>
       )}
@@ -101,7 +102,7 @@ export function PlanSubscribersPage() {
                   {names.get(s.userId) ?? s.userId}
                 </td>
                 <td className="px-4 py-3">{s.name}</td>
-                <td className="px-4 py-3">${s.amount.toFixed(2)}</td>
+                <td className="px-4 py-3">{formatMoney(s.amount)}</td>
                 <td className="px-4 py-3">
                   <Badge
                     tone={

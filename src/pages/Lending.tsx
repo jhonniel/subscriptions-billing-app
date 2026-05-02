@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { SearchableUserSelect } from '@/components/SearchableUserSelect'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
-import { Select } from '@/components/ui/Select'
 import {
   createLending,
   listAllLending,
@@ -15,6 +15,7 @@ import { addTransaction } from '@/services/transactions'
 import { fetchAllUsers, fetchManagedUsers } from '@/services/users'
 import { useAuthStore } from '@/stores/authStore'
 import { formatIsoDate } from '@/utils/dates'
+import { formatMoney } from '@/utils/currency'
 import { canViewUserData } from '@/utils/roles'
 import type { LendingRecord, UserProfile } from '@/types'
 
@@ -25,7 +26,7 @@ export function LendingPage() {
   const [modal, setModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const canRecord = me?.role === 'admin' || me?.role === 'manager'
+  const canMarkPaidAsStaff = me?.role === 'admin' || me?.role === 'manager'
 
   const refresh = useCallback(async () => {
     if (!me) return
@@ -36,18 +37,26 @@ export function LendingPage() {
         setRows(l)
         setUsers(u)
       } else if (me.role === 'manager') {
-        const managed = await fetchManagedUsers(me.id)
-        const all = await listAllLending()
+        const [allLending, allUsers, managed] = await Promise.all([
+          listAllLending(),
+          fetchAllUsers(),
+          fetchManagedUsers(me.id),
+        ])
         const ids = new Set(managed.map((m) => m.id))
-        setUsers(managed)
+        ids.add(me.id)
+        setUsers(allUsers)
         setRows(
-          all.filter(
+          allLending.filter(
             (r) => ids.has(r.lenderId) || ids.has(r.borrowerId),
           ),
         )
       } else {
-        setRows(await listLendingForUser(me.id))
-        setUsers([])
+        const [l, u] = await Promise.all([
+          listLendingForUser(me.id),
+          fetchAllUsers(),
+        ])
+        setRows(l)
+        setUsers(u)
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load')
@@ -86,11 +95,10 @@ export function LendingPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-[var(--color-muted)]">
-          Track money lent between users and repayment status.
+          Track money lent between people. Record a loan you made and search the organization for the
+          borrower. Admins and managers can record on behalf of others.
         </p>
-        {canRecord && (
-          <Button onClick={() => setModal(true)}>Record lending</Button>
-        )}
+        <Button onClick={() => setModal(true)}>Record lending</Button>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
       <Card className="overflow-x-auto !p-0">
@@ -103,7 +111,7 @@ export function LendingPage() {
               <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Notes</th>
-              {canRecord && <th className="px-4 py-3">Actions</th>}
+              <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -111,7 +119,7 @@ export function LendingPage() {
               <tr key={r.id} className="border-b border-[var(--color-border)]/60">
                 <td className="px-4 py-3">{names.get(r.lenderId) ?? r.lenderId}</td>
                 <td className="px-4 py-3">{names.get(r.borrowerId) ?? r.borrowerId}</td>
-                <td className="px-4 py-3 font-medium">${r.amount.toFixed(2)}</td>
+                <td className="px-4 py-3 font-medium">{formatMoney(r.amount)}</td>
                 <td className="px-4 py-3">{r.date}</td>
                 <td className="px-4 py-3">
                   <Badge tone={r.status === 'paid' ? 'success' : 'warning'}>
@@ -121,9 +129,9 @@ export function LendingPage() {
                 <td className="max-w-xs truncate px-4 py-3 text-[var(--color-muted)]">
                   {r.notes}
                 </td>
-                {canRecord && (
-                  <td className="px-4 py-3">
-                    {r.status === 'pending' && (
+                <td className="px-4 py-3">
+                  {r.status === 'pending' &&
+                    (canMarkPaidAsStaff || r.lenderId === me.id) && (
                       <Button
                         variant="secondary"
                         className="!py-1 !text-xs"
@@ -132,8 +140,7 @@ export function LendingPage() {
                         Mark paid
                       </Button>
                     )}
-                  </td>
-                )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -145,18 +152,16 @@ export function LendingPage() {
         )}
       </Card>
 
-      {canRecord && me && (
-        <LendingModal
-          open={modal}
-          onClose={() => setModal(false)}
-          actor={me}
-          users={users}
-          onDone={() => {
-            setModal(false)
-            void refresh()
-          }}
-        />
-      )}
+      <LendingModal
+        open={modal}
+        onClose={() => setModal(false)}
+        actor={me}
+        directoryUsers={users}
+        onDone={() => {
+          setModal(false)
+          void refresh()
+        }}
+      />
     </div>
   )
 }
@@ -165,16 +170,28 @@ function LendingModal({
   open,
   onClose,
   actor,
-  users,
+  directoryUsers,
   onDone,
 }: {
   open: boolean
   onClose: () => void
   actor: UserProfile
-  users: UserProfile[]
+  directoryUsers: UserProfile[]
   onDone: () => void
 }) {
-  const visible = users.filter((u) => canViewUserData(actor, u.id, u.createdBy))
+  const isSelfServe = actor.role === 'user'
+  const lenderCandidates = useMemo(() => {
+    if (isSelfServe) return [actor]
+    return directoryUsers.filter((u) => canViewUserData(actor, u.id, u.createdBy))
+  }, [actor, directoryUsers, isSelfServe])
+
+  const borrowerCandidates = useMemo(() => {
+    if (isSelfServe) {
+      return directoryUsers.filter((u) => u.id !== actor.id)
+    }
+    return directoryUsers.filter((u) => canViewUserData(actor, u.id, u.createdBy))
+  }, [actor, directoryUsers, isSelfServe])
+
   const [lenderId, setLenderId] = useState('')
   const [borrowerId, setBorrowerId] = useState('')
   const [amount, setAmount] = useState('100')
@@ -183,12 +200,34 @@ function LendingModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const effectiveLender = lenderId || visible[0]?.id || ''
+  useEffect(() => {
+    if (!open) return
+    setErr(null)
+    setBusy(false)
+    setAmount('100')
+    setDate(formatIsoDate(new Date()))
+    setNotes('')
+    if (isSelfServe) {
+      setBorrowerId('')
+      return
+    }
+    const pool = directoryUsers.filter((u) => canViewUserData(actor, u.id, u.createdBy))
+    if (pool.length < 2) {
+      setLenderId(pool[0]?.id ?? '')
+      setBorrowerId(pool[0]?.id ?? '')
+    } else {
+      const first = pool[0]!
+      const second = pool.find((u) => u.id !== first.id) ?? pool[1]!
+      setLenderId(first.id)
+      setBorrowerId(second.id)
+    }
+  }, [open, actor, directoryUsers, isSelfServe])
+
+  const effectiveLender = isSelfServe ? actor.id : lenderId || lenderCandidates[0]?.id || ''
   const effectiveBorrower =
     borrowerId ||
-    visible.find((u) => u.id !== effectiveLender)?.id ||
-    visible[1]?.id ||
-    visible[0]?.id ||
+    borrowerCandidates.find((u) => u.id !== effectiveLender)?.id ||
+    borrowerCandidates[0]?.id ||
     ''
 
   async function submit(e: React.FormEvent) {
@@ -225,37 +264,45 @@ function LendingModal({
     }
   }
 
+  const canSubmit = isSelfServe
+    ? Boolean(effectiveBorrower && effectiveBorrower !== actor.id)
+    : Boolean(
+        effectiveLender &&
+          effectiveBorrower &&
+          effectiveLender !== effectiveBorrower &&
+          lenderCandidates.length > 0,
+      )
+
   return (
     <Modal open={open} title="Record lending" onClose={onClose}>
-      <form className="space-y-3" onSubmit={(e) => void submit(e)}>
-        <div>
-          <label className="mb-1 block text-xs text-[var(--color-muted)]">Lender</label>
-          <Select
+      <form className="space-y-4" onSubmit={(e) => void submit(e)}>
+        {isSelfServe ? (
+          <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)]/50 px-3 py-2 text-sm">
+            <span className="text-[var(--color-muted)]">You are recording as lender · </span>
+            <span className="font-medium text-[var(--color-foreground)]">{actor.name}</span>
+          </div>
+        ) : (
+          <SearchableUserSelect
+            label="Lender"
+            users={lenderCandidates}
             value={effectiveLender}
-            onChange={(e) => setLenderId(e.target.value)}
-            required
-          >
-            {visible.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs text-[var(--color-muted)]">Borrower</label>
-          <Select
-            value={effectiveBorrower}
-            onChange={(e) => setBorrowerId(e.target.value)}
-            required
-          >
-            {visible.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </Select>
-        </div>
+            onChange={(id) => {
+              setLenderId(id)
+              if (id === effectiveBorrower) setBorrowerId('')
+            }}
+            excludeIds={[]}
+          />
+        )}
+
+        <SearchableUserSelect
+          label="Borrower (search)"
+          users={borrowerCandidates}
+          value={effectiveBorrower}
+          onChange={(id) => setBorrowerId(id)}
+          excludeIds={effectiveLender ? [effectiveLender] : []}
+          emptyHint="No users match. Try another name or email."
+        />
+
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs text-[var(--color-muted)]">Amount</label>
@@ -281,7 +328,7 @@ function LendingModal({
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={busy || visible.length < 2}>
+          <Button type="submit" disabled={busy || !canSubmit}>
             {busy ? 'Saving…' : 'Save'}
           </Button>
         </div>

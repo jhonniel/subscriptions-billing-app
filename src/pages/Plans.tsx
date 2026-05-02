@@ -6,16 +6,16 @@ import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
-import { listCategories } from '@/services/categories'
+import { DEFAULT_CATEGORY_FALLBACK, listCategories } from '@/services/categories'
 import { APP_BASE } from '@/routes'
 import { createPlan, deletePlan, listPlans, updatePlan } from '@/services/plans'
 import { countActiveSubscriptionsForPlan } from '@/services/subscriptions'
-import type { BillingCycle, Category, SubscriptionPlan } from '@/types'
+import type { BillingCycle, SubscriptionPlan } from '@/types'
+import { formatMoney } from '@/utils/currency'
 
 export function PlansPage() {
   const [plans, setPlans] = useState<SubscriptionPlan[]>([])
   const [usage, setUsage] = useState<Record<string, number>>({})
-  const [categories, setCategories] = useState<Category[]>([])
   const [modal, setModal] = useState(false)
   const [editing, setEditing] = useState<SubscriptionPlan | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -23,9 +23,8 @@ export function PlansPage() {
   async function refresh() {
     setError(null)
     try {
-      const [p, cats] = await Promise.all([listPlans(), listCategories()])
+      const p = await listPlans()
       setPlans(p)
-      setCategories(cats)
       const counts: Record<string, number> = {}
       await Promise.all(
         p.map(async (plan) => {
@@ -62,11 +61,10 @@ export function PlansPage() {
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
       <Card className="overflow-x-auto !p-0">
-        <table className="w-full min-w-[800px] text-left text-sm">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="border-b border-[var(--color-border)] bg-[var(--color-surface-2)] text-xs uppercase text-[var(--color-muted)]">
             <tr>
               <th className="px-4 py-3">Plan</th>
-              <th className="px-4 py-3">Category</th>
               <th className="px-4 py-3">Default price</th>
               <th className="px-4 py-3">Cycle</th>
               <th className="px-4 py-3">Slots</th>
@@ -88,8 +86,7 @@ export function PlansPage() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3">{p.categoryName}</td>
-                  <td className="px-4 py-3">${p.defaultAmount.toFixed(2)}</td>
+                  <td className="px-4 py-3">{formatMoney(p.defaultAmount)}</td>
                   <td className="px-4 py-3 capitalize">{p.billingCycle}</td>
                   <td className="px-4 py-3">
                     <span className={full ? 'font-medium text-amber-700 dark:text-amber-300' : ''}>
@@ -152,7 +149,6 @@ export function PlansPage() {
         key={`plan-form-${modal}-${editing?.id ?? 'new'}`}
         open={modal}
         initial={editing}
-        categories={categories}
         onClose={() => {
           setModal(false)
           setEditing(null)
@@ -170,21 +166,16 @@ export function PlansPage() {
 function PlanModal({
   open,
   initial,
-  categories,
   onClose,
   onDone,
 }: {
   open: boolean
   initial: SubscriptionPlan | null
-  categories: Category[]
   onClose: () => void
   onDone: () => void
 }) {
   const [name, setName] = useState(() => initial?.name ?? '')
   const [description, setDescription] = useState(() => initial?.description ?? '')
-  const [categoryId, setCategoryId] = useState(
-    () => initial?.categoryId ?? categories[0]?.id ?? '',
-  )
   const [slotsTotal, setSlotsTotal] = useState(() =>
     initial ? String(initial.slotsTotal) : '4',
   )
@@ -198,15 +189,8 @@ function PlanModal({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const effectiveCat = categoryId || categories[0]?.id || ''
-
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    const cat = categories.find((c) => c.id === effectiveCat)
-    if (!cat) {
-      setErr('Add at least one category (Users → category or Firestore).')
-      return
-    }
     const slots = Math.max(1, Math.floor(Number(slotsTotal)) || 1)
     setErr(null)
     setBusy(true)
@@ -215,14 +199,16 @@ function PlanModal({
         await updatePlan(initial.id, {
           name: name.trim(),
           description: description.trim(),
-          categoryId: cat.id,
-          categoryName: cat.name,
+          categoryId: initial.categoryId,
+          categoryName: initial.categoryName,
           slotsTotal: slots,
           defaultAmount: Number(defaultAmount),
           billingCycle,
           active,
         })
       } else {
+        const categories = await listCategories()
+        const cat = categories[0] ?? DEFAULT_CATEGORY_FALLBACK
         await createPlan({
           name: name.trim(),
           description: description.trim(),
@@ -260,16 +246,6 @@ function PlanModal({
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Optional notes"
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs text-[var(--color-muted)]">Category</label>
-          <Select value={effectiveCat} onChange={(e) => setCategoryId(e.target.value)} required>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </Select>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>

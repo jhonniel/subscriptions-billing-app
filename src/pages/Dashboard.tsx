@@ -19,17 +19,29 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { AssignSubscriptionModal } from '@/components/AssignSubscriptionModal'
 import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { listCategories } from '@/services/categories'
 import { listAllLending, listLendingForUser } from '@/services/lending'
+import { listActivePlans } from '@/services/plans'
 import { listAllSubscriptions, listSubscriptionsForUser } from '@/services/subscriptions'
 import { listAllTransactions, listTransactionsForUser } from '@/services/transactions'
 import { fetchAllUsers, fetchManagedUsers } from '@/services/users'
 import { APP_BASE } from '@/routes'
 import { useAuthStore } from '@/stores/authStore'
 import { monthlyEquivalent } from '@/utils/billing'
+import { formatMoney } from '@/utils/currency'
 import { isDueWithinDays } from '@/utils/dates'
-import type { LendingRecord, Subscription, TransactionRecord, UserProfile } from '@/types'
+import type {
+  Category,
+  LendingRecord,
+  Subscription,
+  SubscriptionPlan,
+  TransactionRecord,
+  UserProfile,
+} from '@/types'
 
 export function DashboardPage() {
   const user = useAuthStore((s) => s.user)
@@ -37,6 +49,10 @@ export function DashboardPage() {
   const [lending, setLending] = useState<LendingRecord[]>([])
   const [tx, setTx] = useState<TransactionRecord[]>([])
   const [users, setUsers] = useState<UserProfile[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [plans, setPlans] = useState<SubscriptionPlan[]>([])
+  const [assignOpen, setAssignOpen] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
 
   useEffect(() => {
     if (!user) return
@@ -44,28 +60,36 @@ export function DashboardPage() {
     let cancelled = false
     async function load() {
       if (actor.role === 'admin') {
-        const [s, l, t, u] = await Promise.all([
+        const [s, l, t, u, cats, activePlans] = await Promise.all([
           listAllSubscriptions(),
           listAllLending(),
           listAllTransactions(),
           fetchAllUsers(),
+          listCategories(),
+          listActivePlans(),
         ])
         if (!cancelled) {
           setSubs(s)
           setLending(l)
           setTx(t)
           setUsers(u)
+          setCategories(cats)
+          setPlans(activePlans)
         }
       } else if (actor.role === 'manager') {
-        const [managed, s, l] = await Promise.all([
+        const [managed, s, l, cats, activePlans] = await Promise.all([
           fetchManagedUsers(actor.id),
           listAllSubscriptions(),
           listAllLending(),
+          listCategories(),
+          listActivePlans(),
         ])
         if (!cancelled) {
-        const ids = new Set(managed.map((m) => m.id))
-        ids.add(actor.id)
+          const ids = new Set(managed.map((m) => m.id))
+          ids.add(actor.id)
           setUsers(managed)
+          setCategories(cats)
+          setPlans(activePlans)
           setSubs(s.filter((x) => ids.has(x.userId)))
           setLending(
             l.filter(
@@ -98,7 +122,7 @@ export function DashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [user])
+  }, [user, reloadTick])
 
   const activeSubs = subs.filter((s) => s.status === 'active')
   const mrr = useMemo(
@@ -147,9 +171,10 @@ export function DashboardPage() {
     )
   }, [activeSubs])
 
-  const mySubscriptionsSorted = useMemo(() => {
-    const order: Record<string, number> = { active: 0, paused: 1, cancelled: 2 }
-    return [...subs].sort((a, b) => {
+  const inactiveSubsSorted = useMemo(() => {
+    const inactive = subs.filter((s) => s.status !== 'active')
+    const order: Record<string, number> = { paused: 0, cancelled: 1 }
+    return inactive.sort((a, b) => {
       const d = (order[a.status] ?? 9) - (order[b.status] ?? 9)
       if (d !== 0) return d
       return a.name.localeCompare(b.name)
@@ -164,12 +189,12 @@ export function DashboardPage() {
         <StatCard label="Active subscriptions" value={String(activeSubs.length)} />
         <StatCard
           label="Est. monthly revenue"
-          value={`$${mrr.toFixed(0)}`}
+          value={formatMoney(mrr, 0)}
           hint="Normalized from billing cycles"
         />
         <StatCard
           label="Outstanding (lending)"
-          value={`$${outstanding.toFixed(0)}`}
+          value={formatMoney(outstanding, 0)}
           hint="Pending principal"
         />
         {(user.role === 'admin' || user.role === 'manager') && (
@@ -180,97 +205,157 @@ export function DashboardPage() {
         )}
       </div>
 
-      {user.role === 'user' && (
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+      {(user.role === 'admin' || user.role === 'manager') && (
+        <>
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="overflow-hidden !p-0">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-2)]/50 px-4 py-3">
+                <h2 className="text-sm font-semibold text-[var(--color-foreground)]">
+                  {user.role === 'admin' ? 'All users' : 'Managed users'}
+                </h2>
+                <Link
+                  to={`${APP_BASE}/users`}
+                  className="text-xs font-medium text-[var(--color-accent)] hover:underline"
+                >
+                  User management →
+                </Link>
+              </div>
+              <div className="max-h-[22rem] overflow-x-auto overflow-y-auto">
+                {users.length === 0 ? (
+                  <p className="p-4 text-sm text-[var(--color-muted)]">No users loaded.</p>
+                ) : (
+                  <table className="w-full min-w-[360px] text-left text-sm">
+                    <thead className="sticky top-0 z-[1] border-b border-[var(--color-border)] bg-[var(--color-surface)] text-xs uppercase text-[var(--color-muted)]">
+                      <tr>
+                        <th className="px-4 py-2">Name</th>
+                        <th className="px-4 py-2">Email</th>
+                        <th className="px-4 py-2">Role</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...users]
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((u) => (
+                          <tr key={u.id} className="border-b border-[var(--color-border)]/50 last:border-0">
+                            <td className="px-4 py-2 font-medium text-[var(--color-foreground)]">{u.name}</td>
+                            <td className="px-4 py-2 text-[var(--color-muted)]">{u.email}</td>
+                            <td className="px-4 py-2 capitalize">{u.role}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </Card>
+            <Card className="!p-4">
               <h2 className="text-sm font-semibold text-[var(--color-foreground)]">
-                Upcoming billing
+                Create subscription
               </h2>
-              <Link
-                to={`${APP_BASE}/subscriptions`}
-                className="text-xs font-medium text-[var(--color-accent)] hover:underline"
-              >
-                Subscriptions
-              </Link>
-            </div>
-            <p className="mb-3 text-xs text-[var(--color-muted)]">
-              Active plans, next charge first. Items due within 7 days are highlighted.
-            </p>
-            {upcomingBillingSorted.length === 0 ? (
-              <p className="text-sm text-[var(--color-muted)]">
-                No active subscriptions. When your manager assigns a plan, it will appear here.
+              <p className="mt-2 text-sm leading-relaxed text-[var(--color-muted)]">
+                Assign a catalog plan (uses plan slots) or a custom subscription to any user in the list.
+                Stats and charts update after you save.
               </p>
-            ) : (
-              <ul className="space-y-3">
-                {upcomingBillingSorted.map((s) => {
-                  const soon = isDueWithinDays(s.nextBillingDate, 7)
-                  const next = parseISO(s.nextBillingDate)
-                  const today = startOfDay(new Date())
-                  const days = differenceInCalendarDays(startOfDay(next), today)
-                  const when =
-                    days < 0
-                      ? `${Math.abs(days)} day${days === -1 ? '' : 's'} overdue`
-                      : days === 0
-                        ? 'Due today'
-                        : days === 1
-                          ? 'Due tomorrow'
-                          : `In ${days} days`
-                  return (
-                    <li
-                      key={s.id}
-                      className={`rounded-lg border px-3 py-2.5 text-sm ${
-                        soon
-                          ? 'border-amber-500/40 bg-amber-500/10 dark:border-amber-500/30 dark:bg-amber-500/10'
-                          : 'border-[var(--color-border)] bg-[var(--color-surface-2)]/50'
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <span className="font-medium text-[var(--color-foreground)]">{s.name}</span>
-                        <span className="font-semibold tabular-nums text-[var(--color-foreground)]">
-                          ${s.amount.toFixed(2)}
-                          <span className="font-normal text-[var(--color-muted)]">
-                            {' '}
-                            / {s.billingCycle}
-                          </span>
-                        </span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
-                        {s.planName && <span>{s.planName}</span>}
-                        {s.planName && <span aria-hidden>·</span>}
-                        <span>{format(next, 'MMM d, yyyy')}</span>
-                        <span aria-hidden>·</span>
-                        <span className={soon ? 'font-medium text-amber-900 dark:text-amber-100' : ''}>
-                          {when}
-                        </span>
-                      </div>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </Card>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button type="button" onClick={() => setAssignOpen(true)}>
+                  Add subscription
+                </Button>
+                <Button variant="secondary" to={`${APP_BASE}/subscriptions`}>
+                  View all subscriptions
+                </Button>
+              </div>
+            </Card>
+          </div>
+          <AssignSubscriptionModal
+            open={assignOpen}
+            onClose={() => setAssignOpen(false)}
+            actor={user}
+            users={users}
+            categories={categories}
+            plans={plans}
+            onDone={() => {
+              setAssignOpen(false)
+              setReloadTick((n) => n + 1)
+            }}
+          />
+        </>
+      )}
 
-          <Card>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-[var(--color-foreground)]">
-                Your subscriptions
-              </h2>
-              <Link
-                to={`${APP_BASE}/subscriptions`}
-                className="text-xs font-medium text-[var(--color-accent)] hover:underline"
-              >
-                Full list
-              </Link>
-            </div>
-            <p className="mb-3 text-xs text-[var(--color-muted)]">
-              Everything assigned to you, including paused or ended plans.
+      {user.role === 'user' && (
+        <Card>
+          <div className="mb-4">
+            <h2 className="text-sm font-semibold text-[var(--color-foreground)]">
+              Your subscriptions
+            </h2>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--color-muted)]">
+              Every <span className="font-medium text-[var(--color-foreground)]">active</span>{' '}
+              subscription an admin assigns to you appears here. Next charge is listed first; due
+              dates within 7 days are highlighted.
             </p>
-            {mySubscriptionsSorted.length === 0 ? (
-              <p className="text-sm text-[var(--color-muted)]">No subscriptions yet.</p>
-            ) : (
-              <ul className="divide-y divide-[var(--color-border)]/60">
-                {mySubscriptionsSorted.map((s) => (
+          </div>
+          {activeSubs.length === 0 ? (
+            <p className="text-sm text-[var(--color-muted)]">
+              No active subscriptions yet. When an administrator assigns you a plan, it will show
+              up here.
+            </p>
+          ) : (
+            <ul className="space-y-3">
+              {upcomingBillingSorted.map((s) => {
+                const soon = isDueWithinDays(s.nextBillingDate, 7)
+                const next = parseISO(s.nextBillingDate)
+                const today = startOfDay(new Date())
+                const days = differenceInCalendarDays(startOfDay(next), today)
+                const when =
+                  days < 0
+                    ? `${Math.abs(days)} day${days === -1 ? '' : 's'} overdue`
+                    : days === 0
+                      ? 'Due today'
+                      : days === 1
+                        ? 'Due tomorrow'
+                        : `In ${days} days`
+                return (
+                  <li
+                    key={s.id}
+                    className={`rounded-lg border px-3 py-2.5 text-sm ${
+                      soon
+                        ? 'border-amber-500/40 bg-amber-500/10 dark:border-amber-500/30 dark:bg-amber-500/10'
+                        : 'border-[var(--color-border)] bg-[var(--color-surface-2)]/50'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <span className="font-medium text-[var(--color-foreground)]">{s.name}</span>
+                      <span className="font-semibold tabular-nums text-[var(--color-foreground)]">
+                        {formatMoney(s.amount)}
+                        <span className="font-normal text-[var(--color-muted)]">
+                          {' '}
+                          / {s.billingCycle}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
+                      {s.planName && <span>{s.planName}</span>}
+                      {s.planName && <span aria-hidden>·</span>}
+                      <span>{format(next, 'MMM d, yyyy')}</span>
+                      <span aria-hidden>·</span>
+                      <span className={soon ? 'font-medium text-amber-900 dark:text-amber-100' : ''}>
+                        {when}
+                      </span>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          {inactiveSubsSorted.length > 0 ? (
+            <div className="mt-8 border-t border-[var(--color-border)]/60 pt-6">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-muted)]">
+                Paused or cancelled
+              </h3>
+              <p className="mt-1 text-xs text-[var(--color-muted)]">
+                These are no longer billing. Contact your admin if you need them reactivated.
+              </p>
+              <ul className="mt-3 divide-y divide-[var(--color-border)]/60">
+                {inactiveSubsSorted.map((s) => (
                   <li
                     key={s.id}
                     className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm first:pt-0 last:pb-0"
@@ -278,21 +363,18 @@ export function DashboardPage() {
                     <div className="min-w-0 flex-1">
                       <div className="font-medium text-[var(--color-foreground)]">{s.name}</div>
                       <div className="mt-0.5 text-xs text-[var(--color-muted)]">
-                        {s.planName ?? 'Custom'} · {s.categoryName} · Next {s.nextBillingDate}
+                        {s.planName ?? 'Custom'}
+                        {s.categoryName ? ` · ${s.categoryName}` : ''} · Next {s.nextBillingDate}
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-2">
                       <span className="tabular-nums text-[var(--color-foreground)]">
-                        ${s.amount.toFixed(2)}
+                        {formatMoney(s.amount)}
                         <span className="text-[var(--color-muted)]"> / {s.billingCycle}</span>
                       </span>
                       <Badge
                         tone={
-                          s.status === 'active'
-                            ? 'success'
-                            : s.status === 'paused'
-                              ? 'warning'
-                              : 'danger'
+                          s.status === 'paused' ? 'warning' : 'danger'
                         }
                       >
                         {s.status}
@@ -301,9 +383,9 @@ export function DashboardPage() {
                   </li>
                 ))}
               </ul>
-            )}
-          </Card>
-        </div>
+            </div>
+          ) : null}
+        </Card>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -318,6 +400,7 @@ export function DashboardPage() {
                 <XAxis dataKey="label" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip
+                  formatter={(v) => [formatMoney(Number(v), 2), 'Volume']}
                   contentStyle={{
                     background: 'var(--color-surface-2)',
                     border: '1px solid var(--color-border)',
@@ -340,6 +423,7 @@ export function DashboardPage() {
                 <XAxis type="number" tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="name" width={72} tick={{ fontSize: 10 }} />
                 <Tooltip
+                  formatter={(v) => [formatMoney(Number(v), 2), 'MRR']}
                   contentStyle={{
                     background: 'var(--color-surface-2)',
                     border: '1px solid var(--color-border)',

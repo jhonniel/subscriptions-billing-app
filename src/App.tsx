@@ -32,7 +32,6 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route path={APP_BASE} element={<AppShell />}>
           <Route index element={<DashboardPage />} />
-          <Route path="subscriptions" element={<SubscriptionsPage />} />
           <Route path="lending" element={<LendingPage />} />
           <Route path="balances" element={<BalancesPage />} />
           <Route element={<RoleRoute allow={['admin']} />}>
@@ -41,6 +40,7 @@ export default function App() {
             <Route path="plans/:planId" element={<PlanSubscribersPage />} />
           </Route>
           <Route element={<RoleRoute allow={['admin', 'manager']} />}>
+            <Route path="subscriptions" element={<SubscriptionsPage />} />
             <Route path="users" element={<UsersPage />} />
           </Route>
           <Route path="*" element={<NotFoundPage />} />

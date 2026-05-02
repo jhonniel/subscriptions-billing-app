@@ -6,21 +6,58 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    /**
+     * Firestore role for the signed-in user, or '' if doc/field missing.
+     * Uses hasAny(['role']) before reading .role so missing keys do not break evaluation.
+     */
+    function actorRole() {
+      return (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(['role'])
+        )
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : '';
+    }
+
+    /**
+     * Custom claims: only read .admin / .manager if the key exists (avoids evaluation errors on absent keys).
+     * Prefer claims so admin works even when Firestore profile get() is flaky; set via Admin SDK then re-login.
+     */
     function isAdmin() {
-      return authed() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return authed() && (
+        (
+          request.auth.token.keys().hasAny(['admin']) &&
+          request.auth.token.admin == true
+        ) ||
+        actorRole() == 'admin' ||
+        actorRole() == 'Admin' ||
+        actorRole() == 'ADMIN'
+      );
     }
 
     function isManager() {
-      return authed() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager';
+      return authed() && (
+        (
+          request.auth.token.keys().hasAny(['manager']) &&
+          request.auth.token.manager == true
+        ) ||
+        actorRole() == 'manager' ||
+        actorRole() == 'Manager' ||
+        actorRole() == 'MANAGER'
+      );
     }
 
+    /** For rules on *other* collections: reads userId’s profile (not the doc being authorized). */
     function managedBy(managerId, userId) {
       return exists(/databases/$(database)/documents/users/$(userId)) &&
         get(/databases/$(database)/documents/users/$(userId)).data.createdBy == managerId;
+    }
+
+    /** Inside match /users/{userId}: never get() the same path as the request — that recurses and denies. */
+    function userDocManagedByActor() {
+      return resource != null &&
+        resource.data.keys().hasAny(['createdBy']) &&
+        resource.data.createdBy == request.auth.uid;
     }
 
     /** Self-serve signup: only evaluate admin/manager branches when not the simple self-create case. */
@@ -45,11 +82,11 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      // Own profile: allow both get and read so single-doc loads always match at least one branch.
-      allow get: if request.auth != null && request.auth.uid == userId;
-      allow read: if request.auth != null && request.auth.uid == userId;
-      allow read: if authed() && isAdmin();
-      allow read: if authed() && isManager() && managedBy(request.auth.uid, userId);
+      // Any signed-in user may READ profiles (directory, lending pickers, admin user table).
+      // Firestore list/get on `users` requires every possible result doc to pass read rules; mixed
+      // legacy rows (missing name/email/role) otherwise make the whole query permission-denied.
+      // Harden for public/multi-tenant apps by moving listing behind Cloud Functions + tighter rules.
+      allow read: if authed();
 
       allow create: if canCreateUser(userId);
 
@@ -59,7 +96,7 @@ service cloud.firestore {
           ? true
           : (
             isAdmin() ||
-            (isManager() && managedBy(request.auth.uid, userId))
+            (isManager() && userDocManagedByActor())
           )
       );
 
@@ -87,10 +124,11 @@ service cloud.firestore {
           )
       );
 
+      // Self-assign first so normal users never depend on isAdmin()/isManager() reads.
       allow create: if authed() && (
+        request.resource.data.userId == request.auth.uid ||
         isAdmin() ||
-        (isManager() && managedBy(request.auth.uid, request.resource.data.userId)) ||
-        (!isAdmin() && !isManager() && request.resource.data.userId == request.auth.uid)
+        (isManager() && managedBy(request.auth.uid, request.resource.data.userId))
       );
 
       allow update, delete: if authed() && (
@@ -154,7 +192,9 @@ service cloud.firestore {
           )
       );
 
+      // Own activity first; admins/managers log subscription rows for other users after that.
       allow create: if authed() && (
+        request.resource.data.userId == request.auth.uid ||
         isAdmin() ||
         (isManager() && (
           managedBy(request.auth.uid, request.resource.data.userId) ||
@@ -163,8 +203,7 @@ service cloud.firestore {
             request.resource.data.relatedUserId != null &&
             managedBy(request.auth.uid, request.resource.data.relatedUserId)
           )
-        )) ||
-        request.resource.data.userId == request.auth.uid
+        ))
       );
 
       allow update, delete: if isAdmin();

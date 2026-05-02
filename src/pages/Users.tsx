@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/Select'
 import { addCategory, listCategories } from '@/services/categories'
 import {
   createUserAsManager,
+  diagnoseFirestoreUsersRead,
   fetchAllUsers,
   fetchManagedUsers,
   updateUserRole,
@@ -22,20 +23,51 @@ export function UsersPage() {
   const [modal, setModal] = useState(false)
   const [catModal, setCatModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [firestoreDiagnostic, setFirestoreDiagnostic] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!me) return
     setError(null)
+    setFirestoreDiagnostic(null)
     try {
-      const cats = await listCategories()
-      setCategories(cats)
-      if (me.role === 'admin') {
-        setRows(await fetchAllUsers())
-      } else {
-        setRows(await fetchManagedUsers(me.id))
+      try {
+        const cats = await listCategories()
+        setCategories(cats)
+      } catch (e: unknown) {
+        const raw = e instanceof Error ? e.message : 'Failed to load categories'
+        throw new Error(`Categories: ${raw}`, { cause: e })
+      }
+      try {
+        if (me.role === 'admin') {
+          setRows(await fetchAllUsers())
+        } else {
+          setRows(await fetchManagedUsers(me.id))
+        }
+      } catch (e: unknown) {
+        const raw = e instanceof Error ? e.message : 'Failed to load users'
+        throw new Error(`Users: ${raw}`, { cause: e })
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load')
+      const raw = e instanceof Error ? e.message : 'Failed to load'
+      const code =
+        typeof e === 'object' && e !== null && 'code' in e
+          ? String((e as { code: unknown }).code)
+          : ''
+      const perm =
+        code === 'permission-denied' ||
+        /permission|insufficient/i.test(raw)
+      setError(
+        perm && !raw.includes('Firebase project id from .env')
+          ? `${raw} Deploy firestore.rules from this repo to the same project as .env. If it still says Users: after deploy, Firestore App Check enforcement is blocking the client (turn it off for testing or finish App Check in .env.example).`
+          : raw,
+      )
+      if (perm) {
+        void diagnoseFirestoreUsersRead()
+          .then(setFirestoreDiagnostic)
+          .catch((err: unknown) =>
+            setFirestoreDiagnostic(`Diagnostic failed: ${err instanceof Error ? err.message : String(err)}`),
+          )
+      }
     }
   }, [me])
 
@@ -66,7 +98,19 @@ export function UsersPage() {
           )}
         </div>
       </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="whitespace-pre-wrap break-words text-sm text-red-600">{error}</p>
+      )}
+      {firestoreDiagnostic && (
+        <details className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)]/80 p-3 text-left">
+          <summary className="cursor-pointer text-sm font-medium text-[var(--color-foreground)]">
+            Firestore diagnostic (expand)
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[var(--color-muted)]">
+            {firestoreDiagnostic}
+          </pre>
+        </details>
+      )}
 
       {me.role === 'admin' && (
         <Card>

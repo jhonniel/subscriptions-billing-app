@@ -4,6 +4,7 @@ import { listLendingForUser } from '@/services/lending'
 import { listSubscriptionsForUser } from '@/services/subscriptions'
 import { useAuthStore } from '@/stores/authStore'
 import { monthlyEquivalent } from '@/utils/billing'
+import { formatMoney } from '@/utils/currency'
 import type { LendingRecord, Subscription } from '@/types'
 
 export function BalancesPage() {
@@ -79,7 +80,7 @@ export function BalancesPage() {
             Payables (debts)
           </div>
           <div className="mt-1 text-2xl font-semibold text-amber-700 dark:text-amber-300">
-            ${payables.toFixed(2)}
+            {formatMoney(payables)}
           </div>
           <div className="mt-1 text-xs text-[var(--color-muted)]">Pending loans you borrowed</div>
         </Card>
@@ -88,7 +89,7 @@ export function BalancesPage() {
             Receivables
           </div>
           <div className="mt-1 text-2xl font-semibold text-emerald-700 dark:text-emerald-300">
-            ${receivables.toFixed(2)}
+            {formatMoney(receivables)}
           </div>
           <div className="mt-1 text-xs text-[var(--color-muted)]">Pending loans you lent</div>
         </Card>
@@ -97,7 +98,7 @@ export function BalancesPage() {
             Est. monthly subscriptions
           </div>
           <div className="mt-1 text-2xl font-semibold text-[var(--color-foreground)]">
-            ${monthlySubs.toFixed(0)}
+            {formatMoney(monthlySubs, 0)}
           </div>
           <div className="mt-1 text-xs text-[var(--color-muted)]">Active plans, normalized to ~monthly</div>
         </Card>
@@ -106,7 +107,7 @@ export function BalancesPage() {
             Net (subs + payables − receivables)
           </div>
           <div className="mt-1 text-2xl font-semibold text-[var(--color-foreground)]">
-            ${netExposure.toFixed(0)}
+            {formatMoney(netExposure, 0)}
           </div>
           <div className="mt-1 text-xs text-[var(--color-muted)]">Illustrative cash-flow pressure</div>
         </Card>
@@ -127,7 +128,7 @@ export function BalancesPage() {
                   className="flex flex-wrap justify-between gap-2 border-b border-[var(--color-border)]/50 py-2 last:border-0"
                 >
                   <span className="text-[var(--color-muted)]">
-                    {youBorrowed ? 'You owe' : 'You are owed'} · ${r.amount.toFixed(2)} · {r.date}
+                    {youBorrowed ? 'You owe' : 'You are owed'} · {formatMoney(r.amount)} · {r.date}
                   </span>
                   <span className="text-[var(--color-foreground)]">{r.notes || '—'}</span>
                 </li>

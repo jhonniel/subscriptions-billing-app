@@ -9,12 +9,23 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore'
-import { db } from '@/firebase/config'
+import { db, ensureAppCheckTokenReady, ensureAuthReadyForFirestore } from '@/firebase/config'
 import type { Category } from '@/types'
 
 const COL = 'categories'
 
+/**
+ * When there are no documents in `categories`, plans and subscriptions still need
+ * denormalized id + name fields — use this instead of blocking the user.
+ */
+export const DEFAULT_CATEGORY_FALLBACK: Category = {
+  id: 'general',
+  name: 'General',
+}
+
 export async function listCategories(): Promise<Category[]> {
+  await ensureAuthReadyForFirestore()
+  await ensureAppCheckTokenReady()
   const q = query(collection(db(), COL), orderBy('name'))
   const snap = await getDocs(q)
   return snap.docs.map((d) => ({

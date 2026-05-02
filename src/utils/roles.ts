@@ -1,5 +1,19 @@
 import type { UserProfile, UserRole } from '@/types'
 
+/** Display label for the signed-in user’s role (top bar, sidebar). */
+export function formatRoleLabel(role: UserRole): string {
+  switch (role) {
+    case 'admin':
+      return 'Admin'
+    case 'manager':
+      return 'Manager'
+    case 'user':
+      return 'User'
+    default:
+      return role
+  }
+}
+
 export function hasRole(user: UserProfile | null, roles: UserRole[]): boolean {
   if (!user) return false
   return roles.includes(user.role)

@@ -5,7 +5,13 @@ import {
   signOut,
 } from 'firebase/auth'
 import { create } from 'zustand'
-import { auth, getFirebaseProjectId, isFirebaseConfigured } from '@/firebase/config'
+import {
+  auth,
+  getFirebaseProjectId,
+  hasAppCheckSiteKeyEnv,
+  isAppCheckActive,
+  isFirebaseConfigured,
+} from '@/firebase/config'
 import {
   ensureSelfServeUserProfile,
   fetchUserProfile,
@@ -15,13 +21,37 @@ import {
 import type { UserProfile } from '@/types'
 import { formatFirebaseAuthError } from '@/utils/firebaseErrors'
 
-function firestoreAccessHint(uid: string): string {
+function firestoreAccessHint(uid: string, code: string | null): string {
   const pid = getFirebaseProjectId() ?? '(unset)'
+  const appCheckConsole = `https://console.firebase.google.com/project/${encodeURIComponent(pid)}/appcheck`
+  const rulesConsole = `https://console.firebase.google.com/project/${encodeURIComponent(pid)}/firestore/rules`
+
+  if (code === 'permission-denied' && !isAppCheckActive()) {
+    const siteHint = hasAppCheckSiteKeyEnv()
+      ? 'App Check site key is in .env but App Check did not finish initializing (see browser console for [firebase] warnings).'
+      : 'No App Check provider is configured in this app (.env is missing VITE_APPCHECK_RECAPTCHA_SITE_KEY or VITE_APPCHECK_RECAPTCHA_ENTERPRISE_SITE_KEY).'
+    return (
+      `Firestore blocked reading users/${uid} (permission-denied). Project: ${pid}. ` +
+      `${siteHint} ` +
+      `When Cloud Firestore has App Check enforcement ON, Firebase returns this same error even if Security Rules allow the read. ` +
+      `Fix A: App Check console → your web app → register reCAPTCHA, put the site key in .env, restart dev; open the browser console, copy the printed App Check debug token, and register it under the app’s “Manage debug tokens”. ` +
+      `Fix B: App Check → APIs → Cloud Firestore → turn enforcement off for now. ` +
+      `Links: ${appCheckConsole} · Rules: ${rulesConsole}`
+    )
+  }
+
+  if (code === 'permission-denied' && isAppCheckActive()) {
+    return (
+      `Firestore blocked reading users/${uid} (permission-denied). Project: ${pid}. ` +
+      `App Check is active, so this is likely Security Rules or missing data: deploy firestore.rules from this repo, and ensure a document exists at users/${uid} with that exact id as your Auth user id. ` +
+      `Rules: ${rulesConsole}`
+    )
+  }
+
   return (
     `Firestore blocked reading users/${uid}. Project: ${pid}. ` +
-    `Fix: (1) Console → Firestore → Rules → publish this repo’s firestore.rules to this project. ` +
-    `(2) Data → users → document id must equal your Auth UID. ` +
-    `(3) If App Check enforces Firestore: Console → App Check → turn enforcement off until the web app is registered, or finish App Check there (this repo does not set App Check in code).`
+    `[Firebase: ${code ?? 'unknown'}]. ` +
+    `Deploy firestore.rules to this project; confirm users/${uid} exists. App Check: ${appCheckConsole}`
   )
 }
 
@@ -29,7 +59,10 @@ function firestoreAccessHint(uid: string): string {
 function firebaseErrorCode(e: unknown): string | null {
   if (typeof e === 'object' && e !== null && 'code' in e) {
     const c = (e as { code: unknown }).code
-    return typeof c === 'string' ? c : null
+    if (typeof c === 'string') return c
+  }
+  if (e instanceof Error && e.cause !== undefined) {
+    return firebaseErrorCode(e.cause)
   }
   return null
 }
@@ -86,7 +119,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           const code = firebaseErrorCode(e)
           const msg = e instanceof Error ? e.message : String(e)
           const codeBit = code ? ` [Firebase: ${code}]` : ''
-          throw new Error(`${msg}${codeBit} ${firestoreAccessHint(fbUser.uid)}`, { cause: e })
+          throw new Error(`${msg}${codeBit} ${firestoreAccessHint(fbUser.uid, code)}`, { cause: e })
         }
         if (!profile) {
           try {
@@ -164,8 +197,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
         error:
           e instanceof Error
-            ? `${e.message} ${firestoreAccessHint(fb.uid)}`
-            : `Could not load your account. ${firestoreAccessHint(fb.uid)}`,
+            ? `${e.message} ${firestoreAccessHint(fb.uid, firebaseErrorCode(e))}`
+            : `Could not load your account. ${firestoreAccessHint(fb.uid, firebaseErrorCode(e))}`,
       })
     }
   },
@@ -201,8 +234,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
         error:
           e instanceof Error
-            ? `${e.message} ${firestoreAccessHint(fb.uid)}`
-            : `Could not load your account. ${firestoreAccessHint(fb.uid)}`,
+            ? `${e.message} ${firestoreAccessHint(fb.uid, firebaseErrorCode(e))}`
+            : `Could not load your account. ${firestoreAccessHint(fb.uid, firebaseErrorCode(e))}`,
       })
     }
   },
@@ -226,8 +259,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         error:
           e instanceof Error
-            ? `${e.message} ${firestoreAccessHint(uid)}`
-            : `Could not refresh profile. ${firestoreAccessHint(uid)}`,
+            ? `${e.message} ${firestoreAccessHint(uid, firebaseErrorCode(e))}`
+            : `Could not refresh profile. ${firestoreAccessHint(uid, firebaseErrorCode(e))}`,
       })
     }
   },

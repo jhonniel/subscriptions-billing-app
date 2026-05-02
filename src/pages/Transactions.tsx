@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/Select'
 import { listAllTransactions } from '@/services/transactions'
 import { fetchAllUsers } from '@/services/users'
 import { downloadCsv, transactionsToCsv } from '@/utils/csv'
+import { formatMoney } from '@/utils/currency'
 import type { TransactionRecord, UserProfile } from '@/types'
 
 type SortKey = keyof Pick<
@@ -183,7 +184,7 @@ export function TransactionsPage() {
                 <td className="px-4 py-3">
                   <Badge tone="info">{r.type}</Badge>
                 </td>
-                <td className="px-4 py-3 font-medium">${r.amount.toFixed(2)}</td>
+                <td className="px-4 py-3 font-medium">{formatMoney(r.amount)}</td>
                 <td className="px-4 py-3">{userName.get(r.userId) ?? r.userId}</td>
                 <td className="px-4 py-3">
                   {r.relatedUserId ? userName.get(r.relatedUserId) ?? r.relatedUserId : '—'}
